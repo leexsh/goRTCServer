@@ -1,0 +1,18 @@
+[global]
+pprof = ":6061"
+
+# server
+dc = "shenzhen"
+name = "register"
+nid = "shenzhen_register_1"
+
+[etcd]
+addrs = ["127.0.0.1:2379"]
+
+[nats]
+url = "nats://127.0.0.1:4222"
+
+[redis]
+addrs = [":6379"]
+password = ""
+db = 0
