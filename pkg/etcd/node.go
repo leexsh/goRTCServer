@@ -46,12 +46,11 @@ func (n *Node) GetNodeValue() string {
 }
 
 // GetRPCChannel 获取RPC对象string
-func (n *Node) GetPRCChannel() string {
+func GetPRCChannel(n Node) string {
 	return "rpc-" + n.NodeID
 }
 
 // GetEventChannel 获取广播对象string
-func (n *Node) GetEventChannel() string {
-
+func GetEventChannel(n Node) string {
 	return "event-" + n.NodeID
 }

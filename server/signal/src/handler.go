@@ -5,6 +5,8 @@ import (
 	"goRTCServer/pkg/proto"
 	"goRTCServer/pkg/utils"
 	"goRTCServer/server/signal/ws"
+
+	nprotoo "github.com/cloudwebrtc/nats-protoo"
 )
 
 // handlerWebSocket 信令处理
@@ -128,7 +130,43 @@ func join(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, rejec
 */
 // leave 离开房间
 func leave(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
+	// 获取register RPC句柄
+	regiserRPC := GetRPCHandlerByServiceName("register")
+	if regiserRPC == nil {
+		reject(codeRegisterRPCErr, codeStr(codeRegisterRPCErr))
+		return
+	}
 
+	// 删除数据库中的流信息
+	resp, err := regiserRPC.SyncRequest(proto.SignalToRegisterOnStreamRemove, utils.Map("rid", rid, "uid", uid, "mid", ""))
+	rmp := utils.Unmarshal(string(resp))
+	if err == nil {
+		rePubs, ok := rmp["rmPubs"].([]interface{})
+		if ok {
+			SendNotifyByUids(rid, uid, proto.SignalToSignalOnLeave, rePubs)
+		}
+	} else {
+		logger.Errorf("singal.leave request register streamRemove err:%s", err.Reason)
+	}
+
+	// 删除数据库的用户信息
+	_, err = regiserRPC.SyncRequest(proto.SignalToRegisterOnLeave, utils.Map("rid", rid, "uid", uid))
+	if err != nil {
+		logger.Errorf("signal.join request register userLeave err:%s", err.Reason)
+	}
+
+	// 发送广播给所有人
+	SendNotifyByUids(rid, uid, proto.SignalToClientOnLeave, rmp["rmPubs"].([]interface{}))
+	// 删除本地对象
+	room := rooms.GetRoom(rid)
+	if room != nil {
+		room.DelPeer(uid)
+	}
 }
 
 /*
@@ -141,7 +179,33 @@ func leave(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reje
 */
 // keepalive 保活
 func keepalive(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
+	// 1.判断是否在房间内
+	room := rooms.GetRoom(rid)
+	if room == nil {
+		reject(codeRIDErr, codeStr(codeRIDErr))
+		return
+	}
 
+	// 获取register RPC句柄
+	regiserRPC := GetRPCHandlerByServiceName("register")
+	if regiserRPC == nil {
+		reject(codeRegisterRPCErr, codeStr(codeRegisterRPCErr))
+		return
+	}
+
+	// 更新数据库
+	_, err := regiserRPC.SyncRequest(proto.SignalToRegisterKeepAlive, utils.Map("rid", rid, "uid", uid))
+
+	if err == nil {
+		reject(err.Code, err.Reason)
+		return
+	}
+	accept([]byte(utils.Marshal(emptyMap)))
 }
 
 /*
@@ -163,7 +227,62 @@ func keepalive(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, 
 */
 // publish 发布流
 func publish(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
+	if invalid(msg, "rid", reject) || invalid(msg, "jsep", reject) {
+		return
+	}
+	jsep := msg["jsep"].(map[string]interface{})
+	if invalid(jsep, "sdp", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
 
+	minfo, ok := msg["minfo"].(map[string]interface{})
+	if minfo == nil || !ok {
+		reject(codeMinfoErr, codeStr(codeMinfoErr))
+		return
+	}
+
+	// 判断是否在房间内
+	room := rooms.GetRoom(rid)
+	if room == nil {
+		reject(codeRIDErr, codeStr(codeRIDErr))
+		return
+	}
+	// 获取sfu节点
+	sfuRPC, sfuid := GetRPCHandlerByPayload("sfu")
+	if sfuRPC == nil {
+		reject(codeSfuRPCErr, codeStr(codeSfuRPCErr))
+		return
+	}
+	resp, err := sfuRPC.SyncRequest(proto.SignalToSfuPublish, utils.Map("rid", rid, "uid", uid, "jsep", jsep))
+	if err != nil {
+		reject(err.Code, err.Reason)
+		return
+	}
+
+	// 获取register RPC句柄
+	regiserRPC := GetRPCHandlerByServiceName("register")
+	if regiserRPC == nil {
+		reject(codeRegisterRPCErr, codeStr(codeRegisterRPCErr))
+		return
+	}
+	// 写数据库
+	rmp := utils.Unmarshal(string(resp))
+	mid := utils.Val(rmp, "mid")
+	stream, err := regiserRPC.SyncRequest(proto.SignalToRegisterOnStreamAdd, utils.Map("rid", rid, "uid", uid, "mid", mid, "sfuid", sfuid, "minfo", minfo))
+	if err != nil {
+		reject(err.Code, err.Reason)
+		return
+	}
+	// 广播给其他人
+	SendNotifyByUids(rid, uid, proto.SignalToSignalOnStreamAdd, []interface{}{stream})
+
+	resp1 := make(map[string]interface{})
+	resp1["mid"] = mid
+	resp1["sfuid"] = sfuid
+	resp1["jesp"] = rmp["jesp"]
+	accept([]byte(utils.Marshal(resp1)))
 }
 
 /*
@@ -178,7 +297,50 @@ func publish(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, re
 */
 // unpublish 取消发布流
 func unpublish(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
+	mid := utils.Val(msg, "mid")
+	sfuid := utils.Val(msg, "sfuid")
 
+	var sfuRPC *nprotoo.Requestor
+	if sfuid != "" {
+		sfuRPC = GetRPCHandlerByNodeId(sfuid)
+	} else {
+		sfuRPC = GetSFURPCHandlerByMID(rid, mid)
+	}
+	if sfuRPC == nil {
+		reject(codeSfuRPCErr, codeStr(codeSfuRPCErr))
+		return
+	}
+	_, err := sfuRPC.SyncRequest(proto.SignalToSfuUnPublish, utils.Map("rid", rid, "mid", mid))
+	if err != nil {
+		reject(err.Code, err.Reason)
+		return
+	}
+
+	// 获取register RPC句柄
+	regiserRPC := GetRPCHandlerByServiceName("register")
+	if regiserRPC == nil {
+		reject(codeRegisterRPCErr, codeStr(codeRegisterRPCErr))
+		return
+	}
+	// 删除数据库流
+	resp, err := regiserRPC.SyncRequest(proto.SignalToRegisterOnStreamRemove, utils.Map("rid", rid, "uid", uid, "mid", mid))
+	if err != nil {
+		reject(err.Code, err.Reason)
+		return
+	}
+
+	rmp := utils.Unmarshal(string(resp))
+	// 发送广播给其他人
+	rmPubs, ok := rmp["rmPubs"].([]interface{})
+	if ok {
+		SendNotifyByUids(rid, uid, proto.SignalToSignalOnStreamRemove, rmPubs)
+	}
+	accept([]byte(utils.Marshal(emptyMap)))
 }
 
 /*
@@ -197,7 +359,65 @@ func unpublish(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, 
 */
 // subscribe 订阅流
 func subscribe(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	jsep := msg["jsep"].(map[string]interface{})
+	if invalid(jsep, "sdp", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
+	mid := utils.Val(msg, "mid")
 
+	// 1.判断是否在房间内
+	room := rooms.GetRoom(rid)
+	if room == nil {
+		reject(codeRIDErr, codeStr(codeRIDErr))
+		return
+	}
+
+	// 2.获取sfu RPC句柄
+	sfuid := utils.Val(msg, "sfuid")
+	var sfuRPC *nprotoo.Requestor
+	if sfuid != "" {
+		sfuRPC = GetRPCHandlerByNodeId(sfuid)
+	} else {
+		sfuRPC = GetSFURPCHandlerByMID(rid, mid)
+	}
+	if sfuRPC == nil {
+		reject(codeSfuRPCErr, codeStr(codeSfuRPCErr))
+		return
+	}
+	// 3. 获取sfu节点的resp
+	resp, err := sfuRPC.SyncRequest(proto.SignalToSfuSubscribe, utils.Map("rid", rid, "suid", uid, "mid", mid, "jsep", jsep))
+	rmp := utils.Unmarshal(string(resp))
+	if err != nil {
+		if err.Code == 403 {
+			// 3.1 流不存在
+			// 获取register RPC句柄
+			regiserRPC := GetRPCHandlerByServiceName("register")
+			if regiserRPC == nil {
+				reject(codeRegisterRPCErr, codeStr(codeRegisterRPCErr))
+				return
+			}
+			// 3.1.1 删除数据库中的流
+			id := proto.GetUIDFromMID(mid)
+			resp, err = regiserRPC.SyncRequest(proto.SignalToRegisterOnStreamRemove, utils.Map("rid", rid, "uid", id, "mid", mid))
+			if err != nil {
+				reject(err.Code, err.Reason)
+				return
+			}
+			// 3.1.2 通知其他人
+			rmp = utils.Unmarshal(string(resp))
+			if rmPubs, ok := rmp["rmPubs"]; ok {
+				SendNotifyByUids(rid, id, proto.SignalToClientOnStreamRemove, []interface{}{rmPubs})
+			}
+			reject(err.Code, err.Reason)
+		} else {
+			accept([]byte(utils.Marshal(rmp)))
+		}
+	}
 }
 
 /*
@@ -213,7 +433,31 @@ func subscribe(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, 
 */
 // unsubscribe 取消订阅流
 func unsubscribe(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
-
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	rid := utils.Val(msg, "rid")
+	sid := utils.Val(msg, "sid")
+	mid := utils.Val(msg, "mid")
+	// 1.获取sfu RPC句柄
+	sfuid := utils.Val(msg, "sfuid")
+	var sfuRPC *nprotoo.Requestor
+	if sfuid != "" {
+		sfuRPC = GetRPCHandlerByNodeId(sfuid)
+	} else {
+		sfuRPC = GetSFURPCHandlerByMID(rid, mid)
+	}
+	if sfuRPC == nil {
+		reject(codeSfuRPCErr, codeStr(codeSfuRPCErr))
+		return
+	}
+	// 2.获取sfu节点的resp
+	_, err := sfuRPC.SyncRequest(proto.SignalToSfuUnSubscribe, utils.Map("rid", rid, "mid", mid, "sid", sid))
+	if err != nil {
+		reject(err.Code, err.Reason)
+		return
+	}
+	accept([]byte(utils.Marshal(emptyMap)))
 }
 
 /*
@@ -227,7 +471,13 @@ func unsubscribe(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc
 */
 // broadcast 客户端发送广播给对方
 func broadcast(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
-
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
+	data := utils.Map("rid", rid, "uid", uid, "data", msg["data"])
+	SendNotifyByUid(rid, uid, proto.SignalToClientBroadcast, data)
 }
 
 /*
@@ -240,7 +490,15 @@ func broadcast(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, 
 */
 // 获取房间其他用户数据
 func getusers(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
-
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
+	// 查询房间内用户信息
+	_, users := FindRoomUsers(rid, uid)
+	res := utils.Map("users", users)
+	accept([]byte(utils.Marshal(res)))
 }
 
 /*
@@ -253,5 +511,12 @@ func getusers(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, r
 */
 // 获取房间其他用户流数据
 func getpubs(peer *ws.Peer, msg map[string]interface{}, accept ws.AcceptFunc, reject ws.RejectFunc) {
-
+	if invalid(msg, "rid", reject) {
+		return
+	}
+	uid := peer.ID()
+	rid := utils.Val(msg, "rid")
+	_, pubs := FindRoomPubs(rid, uid)
+	res := utils.Map("pubs", pubs)
+	accept([]byte(utils.Marshal(res)))
 }

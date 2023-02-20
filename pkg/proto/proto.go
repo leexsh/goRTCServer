@@ -54,7 +54,7 @@ const (
 	SignalToRegisterKeepAlive      = "keepalive"     // signal->register 有人保活
 	SignalToRegisterOnStreamAdd    = "stream_add"    // signal->register 有人开始推流
 	SignalToRegisterOnStreamRemove = "stream_remove" // signal->register 有人停止推流
-	SignalToRegisterGetSignalInfo  = "getSignalInfo" // signal->register 根据uid查询对应的signal
+	SignalToRegisterGetSignalInfo  = "getSignalInfo" // signal->register 根据uid查询对应的user是否在线
 	SignalToRegisterGetSfuInfo     = "getSfuInfo"    // signal->register 获取对应的sfu
 	SignalToRegisterGetRoomUsers   = "getRoomUsers"  // signal->register 获取房间其他用户数据
 	SignalToRegisterGetRoomPubs    = "getRoomPubs"   // signal->register 获取房间其他用户推流数据

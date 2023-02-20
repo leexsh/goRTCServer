@@ -12,7 +12,7 @@ import (
 
 // 处理RPC请求
 func handleRPCMsg(request nprotoo.Request, accept nprotoo.RespondFunc, reject nprotoo.RejectFunc) {
-	handleRPCRequest(request, accept, reject)
+	go handleRPCRequest(request, accept, reject)
 }
 
 // 接收signal消息处理
@@ -37,7 +37,7 @@ func handleRPCRequest(req nprotoo.Request, accept nprotoo.RespondFunc, reject np
 	case proto.SignalToRegisterOnStreamRemove:
 		res, err = streamRemove(data)
 	case proto.SignalToRegisterGetSignalInfo:
-		res, err = getSignalByUid(data)
+		res, err = getUserOnlineByUid(data)
 	case proto.SignalToRegisterGetSfuInfo:
 		res, err = getSfuByMid(data)
 	case proto.SignalToRegisterGetRoomUsers:
@@ -221,10 +221,10 @@ func streamRemove(data map[string]interface{}) (map[string]interface{}, *nprotoo
 }
 
 /*
-	"method" proto.SignalToRegisterGetSignalInfo
+	"method" proto.SignalToRegisterGetUserInfo
 */
-// 获取uid指定的signal节点信息
-func getSignalByUid(data map[string]interface{}) (map[string]interface{}, *nprotoo.Error) {
+// 获取rid, uid指定的用户是否在线
+func getUserOnlineByUid(data map[string]interface{}) (map[string]interface{}, *nprotoo.Error) {
 	rid := utils.Val(data, "rid")
 	uid := utils.Val(data, "uid")
 	// 获取用户的signal服务器
@@ -244,14 +244,14 @@ func getSignalByUid(data map[string]interface{}) (map[string]interface{}, *nprot
 // 获取mid指定对应的sfu节点
 func getSfuByMid(data map[string]interface{}) (map[string]interface{}, *nprotoo.Error) {
 	rid := utils.Val(data, "rid")
-	uid := utils.Val(data, "uid")
 	mid := utils.Val(data, "mid")
+	uid := proto.GetUIDFromMID(mid)
 	// 获取用户流的sfu服务器
 	ukey := proto.GetMediaPubKey(rid, uid, mid)
 	uKeys := regRedis.Keys(ukey)
 	if len(uKeys) > 0 {
 		sfuId := regRedis.Get(ukey)
-		return utils.Map("rid", rid, "uid", uid, "sfuid", sfuId), nil
+		return utils.Map("rid", rid, "sfuid", sfuId), nil
 	} else {
 		return nil, &nprotoo.Error{Code: 410, Reason: fmt.Sprintf("cann't find sfu node by key: %v", ukey)}
 	}

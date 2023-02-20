@@ -45,12 +45,12 @@ func (s *ServiceNode) NodeInfo() Node {
 
 // GetRPCChannel 获取RPC对象string
 func (s *ServiceNode) GetRPCChannel() string {
-	return s.node.GetPRCChannel()
+	return GetPRCChannel(s.node)
 }
 
 // GetEventChannel 获取广播对象string
 func (s *ServiceNode) GetEventChannel() string {
-	return s.node.GetEventChannel()
+	return GetEventChannel(s.node)
 }
 
 // RegisterNode 注册服务节点
