@@ -31,6 +31,7 @@
 
 ![架构](./doc/pict2.jpg)<br>
 <center>架构 (by 飞书文档)</center>
+
 # 5. 通信协议
 - 协议采用[protoo](https://protoo.versatica.com/)格式设计，利用websocket进行连接，数据采用json格式
 
